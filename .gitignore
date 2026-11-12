@@ -1,0 +1,43 @@
+# Build output
+build/
+build_*/
+*.self
+*.velf
+*.elf
+*.vpk
+*.bin
+*.sfo
+
+# Game files: NEVER commit anything from the APK or OBBs, not even once (it stays in history)
+*.apk
+*.obb
+*.so
+*.dds
+*.tga
+*.pvr
+*.bdae
+*.wav
+*.mpc
+*.vxn
+*.swf
+*.ttf
+lib/
+obb/
+obb_extracted/
+apk/
+android/
+gamefiles/
+ux0/
+ux0_vita_package/
+
+# Logs and crash dumps (may contain local paths)
+*.log
+logs/
+*.psp2dmp
+
+# Editor / OS
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+__pycache__/
