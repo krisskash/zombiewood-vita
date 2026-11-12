@@ -16,6 +16,7 @@ Only Python 3's standard library is used. Nothing is downloaded and nothing leav
 """
 import argparse
 import hashlib
+import io
 import os
 import shutil
 import sys
@@ -109,18 +110,29 @@ def main():
         print("    note: this APK differs from the tested one; continuing, the libraries are checked next.")
 
     print("2/4 Extracting the game libraries from the APK ...")
+    if not zipfile.is_zipfile(a.apk):
+        fail(a.apk + " is not a valid APK (the file is damaged or not an APK)")
     with zipfile.ZipFile(a.apk) as z:
+        # a plain APK has lib/armeabi-v7a/ itself; an XAPK / split-APK bundle has it in an inner .apk
+        inner = [i for i in z.infolist() if i.filename.lower().endswith(".apk")]
         for name, (size, crc) in SO_FILES.items():
+            data = None
             try:
-                info = z.getinfo("lib/armeabi-v7a/" + name)
+                data = z.read("lib/armeabi-v7a/" + name)
             except KeyError:
+                for i in inner:
+                    with zipfile.ZipFile(io.BytesIO(z.read(i))) as zi:
+                        try:
+                            data = zi.read("lib/armeabi-v7a/" + name)
+                            break
+                        except KeyError:
+                            pass
+            if data is None:
                 fail(name + " is not in this APK (is it the ARMv7 build of Zombiewood 1.5.3?)")
-            dst = os.path.join(a.out, name)
-            with z.open(info) as src, open(dst, "wb") as f:
-                shutil.copyfileobj(src, f, 1 << 20)
-            if os.path.getsize(dst) != size or crc32_of(dst) != crc:
-                os.remove(dst)
+            if len(data) != size or (zlib.crc32(data) & 0xFFFFFFFF) != crc:
                 fail(name + " does not match version 1.5.3 (15325); this loader only supports that build")
+            with open(os.path.join(a.out, name), "wb") as f:
+                f.write(data)
 
     print("3/4 Copying and unpacking the OBB files (about 300 MB, takes a minute) ...")
     for n, p in obbs.items():
@@ -166,4 +178,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (zipfile.BadZipFile, zlib.error, EOFError) as e:
+        # zipfile verifies every entry's CRC while unpacking: a damaged OBB of the right size ends here
+        fail("a game file is damaged (%s). Copy the APK and both OBB files again from your device." % e)
+    except OSError as e:
+        fail("could not read or write a file: %s (is there enough free disk space?)" % e)
