@@ -87,11 +87,17 @@ Open an issue with: your firmware and CFW, the APK version, what happened, and
 `ux0:data/zombiewood/debug_v2.log`.
 
 ## Credits
-- [TheFloW](https://github.com/TheOfficialFloW): `so_util` (from gtasa_vita, MIT, see
-  `LICENSE.so_util`) and kubridge.
-- [Rinnegatamante](https://github.com/Rinnegatamante): vitaGL and vitashark.
-- The [VitaSDK](https://vitasdk.org) team.
+- [TheFloW](https://github.com/TheOfficialFloW) (Andy Nguyen): `so_util` from
+  [gtasa_vita](https://github.com/TheOfficialFloW/gtasa_vita) (MIT, see `LICENSE.so_util`), whose
+  loader design this port follows, and kubridge.
+- Andy Nguyen, [Rinnegatamante](https://github.com/Rinnegatamante) and
+  [Volodymyr Atamanenko](https://github.com/v-atamanenko): the Modern Combat 3 Vita port, from which
+  the bionic pthread wrappers and several Gameloft-specific approaches were adapted (MIT, see
+  `LICENSE.mc3`).
+- Rinnegatamante: vitaGL, vitashark and mathneon.
+- The [VitaSDK](https://vitasdk.org) team, and the authors of zlib and libpng.
 
 ## License
-The loader's own code is GPL-3.0 (see `LICENSE`). `so_util.c` / `so_util.h` remain under their MIT
-license. Zombiewood and all of its assets belong to Gameloft and are not covered by this license.
+The loader's own code is GPL-3.0 (see `LICENSE`). `so_util.c` / `so_util.h` and the parts adapted
+from the Modern Combat 3 port remain under their MIT licenses (`LICENSE.so_util`, `LICENSE.mc3`).
+Zombiewood and all of its assets belong to Gameloft and are not covered by this license.
