@@ -9,6 +9,12 @@ made from the game's artwork; no code, models, sounds or other game data. You ne
 legally obtained copy of Zombiewood 1.5.3 for Android. Zombiewood is © Gameloft; this project is
 not affiliated with or endorsed by Gameloft.
 
+<p align="center">
+  <img src="screenshots/gameplay1.png" width="32%" alt="Gameplay on PS Vita">
+  <img src="screenshots/gameplay2.png" width="32%" alt="Gameplay on PS Vita">
+  <img src="screenshots/menu.png" width="32%" alt="Main menu on PS Vita">
+</p>
+
 ## Status
 Playable from start to finish of a level on real hardware (PS Vita, HENkaku/Ensō).
 
