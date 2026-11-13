@@ -41,3 +41,6 @@ logs/
 .DS_Store
 Thumbs.db
 __pycache__/
+
+# LiveArea/bubble art is Gameloft artwork: packed into the VPK, never committed
+sce_sys/

@@ -153,27 +153,6 @@ if(NOT VITA3K_BUILD)
 endif()
 
 # ──────────────────────────────────────────────────────────
-# MINIMAL TEST TARGET (only basic libs, no vitaGL/kubridge)
-# ──────────────────────────────────────────────────────────
-add_executable(test_minimal
-  test_minimal.c
-)
-
-target_link_libraries(test_minimal
-  SceIofilemgr_stub
-  SceKernelThreadMgr_stub
-  c
-)
-
-vita_create_self(test_minimal.self test_minimal UNSAFE)
-
-vita_create_vpk(test_minimal.vpk ZMBW00099
-  test_minimal.self
-  NAME    "Zombiewood Test"
-  VERSION "01.00"
-)
-
-# ──────────────────────────────────────────────────────────
 # Self (signed ELF for Vita)
 # ──────────────────────────────────────────────────────────
 vita_create_self(zombiewood.self zombiewood_vita UNSAFE)
@@ -183,10 +162,20 @@ vita_create_self(zombiewood.self zombiewood_vita UNSAFE)
 # v5.13: loader only. No Gameloft file is packaged; the player copies libZombieWood.so,
 # libgenerator.so and both OBBs from their own Zombiewood 1.5.3 to ux0:data/zombiewood/.
 # ──────────────────────────────────────────────────────────
+# Bubble/LiveArea art (Gameloft artwork) is kept out of git; packed only if present locally.
+set(ZW_SCE_SYS_FILES "")
+if(EXISTS ${CMAKE_SOURCE_DIR}/sce_sys/icon0.png)
+  foreach(f icon0.png livearea/contents/bg.png livearea/contents/startup.png livearea/contents/template.xml)
+    list(APPEND ZW_SCE_SYS_FILES ${CMAKE_SOURCE_DIR}/sce_sys/${f} sce_sys/${f})
+  endforeach()
+  set(ZW_SCE_SYS_FILES FILE ${ZW_SCE_SYS_FILES})
+endif()
+
 vita_create_vpk(zombiewood.vpk ZMBW00001
   zombiewood.self
   NAME    "Zombiewood"
   VERSION "01.00"
+  ${ZW_SCE_SYS_FILES}
 )
 
 # ──────────────────────────────────────────────────────────

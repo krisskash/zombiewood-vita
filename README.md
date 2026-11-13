@@ -4,8 +4,9 @@ A loader that runs the Android version of **Zombiewood 1.5.3** natively on the P
 game's own ARMv7 libraries into memory, patches their Android imports with Vita equivalents, and
 renders through vitaGL.
 
-**No game files are included.** This repository and the VPK contain only the loader. You need your
-own legally obtained copy of Zombiewood 1.5.3 for Android. Zombiewood is © Gameloft; this project is
+**No game files are included.** The VPK contains the loader plus a LiveArea icon and background
+made from the game's artwork; no code, models, sounds or other game data. You need your own
+legally obtained copy of Zombiewood 1.5.3 for Android. Zombiewood is © Gameloft; this project is
 not affiliated with or endorsed by Gameloft.
 
 ## Status
@@ -78,7 +79,9 @@ Needs [VitaSDK](https://vitasdk.org) with vitaGL, vitashark, mathneon and kubrid
 bash build.sh
 ```
 
-The VPK is written to `build/zombiewood.vpk` (title ID `ZMBW00001`). Measurement options
+The VPK is written to `build/zombiewood.vpk` (title ID `ZMBW00001`). The LiveArea art is not in
+git: put your own `sce_sys/icon0.png` and `sce_sys/livearea/contents/{bg.png,startup.png,template.xml}`
+in the repository root to have them packed, otherwise the VPK gets the default bubble. Measurement options
 (`ZW_PERIODIC_LOG`, `ZW_CALLPROF`, A/B switches) are off by default; pass them with
 `ZW_CMAKE_ARGS='-DZW_DEFS=ZW_PERIODIC_LOG=1' bash build.sh`. Never ship a measurement build.
 

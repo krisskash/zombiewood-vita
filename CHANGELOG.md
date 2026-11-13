@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.0 — first public release (loader build v5.17)
+## v1.0.0 — first public release (loader build v5.18)
 - Runs Zombiewood 1.5.3 (Android) on PS Vita: menus, gameplay, saves, local shop.
 - Physical controls: sticks, power-ups on Square / Triangle / Circle with on-screen badges,
   START to pause, Cross for a centre tap; optional on-screen sticks.
