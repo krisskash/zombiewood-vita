@@ -6807,7 +6807,8 @@ static void zw_ds_probe(const char *tag, int frame) {
 /* probe schedule: 0 none, 1 clear-only 1.0, 2 clear-only 0.25,
  * 3 game frame GAME func + game stencil, 4 game frame ALWAYS, 5 game frame defaults */
 static int zw_ds_probe_kind(int frame) {
-    return (g_zw_trace_request || frame == 900) ? 5 : 0;   /* v4.76: screenshot on START (v4.79: plus one at frame 900) */
+    /* v4.76: screenshot on START (v4.79: plus one at frame 900); v5.18: debug builds only */
+    return (ZW_DEBUG_BUILD && (g_zw_trace_request || frame == 900)) ? 5 : 0;
 }
 #endif
 
