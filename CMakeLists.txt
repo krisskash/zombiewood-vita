@@ -45,7 +45,6 @@ add_executable(zombiewood_vita
   audio_sl.c
   zw_prof.c
   zw_gxmstat.c
-  zw_glq.c
 )
 # Measurement build only: cmake -DZW_GXMSTAT=1 times the SceGxm calls made inside draw calls (zw_gxmstat.c).
 if(ZW_GXMSTAT)

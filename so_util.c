@@ -403,13 +403,6 @@ int so_resolve(so_module *mod, so_default_dynlib *default_dynlib, int size_defau
   return 0;
 }
 
-void so_initialize(so_module *mod) {
-  for (int i = 0; i < mod->num_init_array; i++) {
-    if (mod->init_array[i])
-      mod->init_array[i]();
-  }
-}
-
 uint32_t so_hash(const uint8_t *name) {
   uint64_t h = 0, g;
   while (*name) {

@@ -36,7 +36,6 @@
 #include <jni.h>
 
 #include "so_util.h"
-#include "jni_stubs.h"
 
 #ifndef JNI_OK
 #define JNI_OK 0
@@ -48,11 +47,6 @@
 
 #ifndef JNI_TRUE
 #define JNI_TRUE 1
-#endif
-
-/* Same guard as in so_util.c — VitaSDK doesn't define USER_RX publicly */
-#ifndef SCE_KERNEL_MEMBLOCK_TYPE_USER_RX
-#define SCE_KERNEL_MEMBLOCK_TYPE_USER_RX (0x0C20D050)
 #endif
 
 /* Fixed load addresses for the two .so files.
@@ -70,7 +64,6 @@ typedef unsigned int SLuint32;
 typedef unsigned char SLboolean;
 typedef struct SLEngineOption_ { SLuint32 feature; SLuint32 data; } SLEngineOption;
 typedef SLuint32 SLresult;
-#define SL_RESULT_SUCCESS ((SLresult)0)
 
 /* ─────────────────────────────────────────────
    Logging helpers - Direct kernel file I/O (no FILE*, no vfprintf)
@@ -300,7 +293,6 @@ typedef struct VirtualFile_ {
     unsigned trace_ops;
     int obb;          /* v5.02: 1 = backed by the shared OBB block cache, not asset->data */
     int obb_idx;
-    int owned;        /* v5.17: asset (and its data) malloc'd for this open only, freed on fclose */
 } VirtualFile;
 
 static VirtualAssetCache g_virtual_asset_cache[VIRTUAL_ASSET_CACHE_SLOTS];
@@ -1091,50 +1083,6 @@ static void wav_release(VirtualAssetCache *va) {
     if (s->refs > 0) s->refs--;
     sceKernelUnlockLwMutex(&g_wav_mtx, 1);
 }
-/* ── v5.17: whole-file reads for mid-game asset opens ──
- * Spawning an enemy mid-fight loads its textures/meshes through stdio: ~127 small freads with
- * seeks, ~0.7 ms each on the memory card (90-260 ms spikes). Read-only opens of asset files up to
- * ZW_WHOLE_MAX are read with one sceIoRead into a malloc'd buffer and served as a VirtualFile;
- * the buffer is freed on fclose. Live total is capped (heap has ~4 MB free in a level). */
-#ifndef ZW_WHOLE_FILE
-#define ZW_WHOLE_FILE 0   /* measured inert: spawns read from already-open archives */
-#endif
-#ifndef ZW_WHOLE_AB
-#define ZW_WHOLE_AB 0   /* 1 = measurement: only in odd 600-frame windows */
-#endif
-#define ZW_WHOLE_MAX   (768 * 1024)
-#define ZW_WHOLE_LIVE  (2 * 1024 * 1024)
-static volatile long g_whole_live;
-static unsigned g_whole_n, g_whole_kb, g_whole_us, g_whole_skip;
-static int whole_ext_ok(const char *fname) {
-    static const char *const ext[] = { ".tga", ".dds", ".pvr", ".png", ".jpg", ".bdae", ".anim", ".bin", ".ktx", ".etc", NULL };
-    for (int i = 0; ext[i]; i++) if (has_ext(fname, ext[i])) return 1;
-    return 0;
-}
-static FILE *whole_vfopen(const char *path) {
-    SceUInt64 t0 = sceKernelGetProcessTimeWide();
-    SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
-    if (fd < 0) return NULL;
-    long len = (long)sceIoLseek(fd, 0, SCE_SEEK_END);
-    if (len <= 0 || len > ZW_WHOLE_MAX || g_whole_live + len > ZW_WHOLE_LIVE) { sceIoClose(fd); g_whole_skip++; return NULL; }
-    VirtualAssetCache *va = malloc(sizeof(*va));
-    unsigned char *data = va ? malloc((size_t)len) : NULL;
-    if (!data) { free(va); sceIoClose(fd); g_whole_skip++; return NULL; }
-    int got = sceIoPread(fd, data, (SceSize)len, 0);
-    sceIoClose(fd);
-    VirtualFile *vf = got == len ? vf_alloc() : NULL;
-    if (!vf) { free(data); free(va); g_whole_skip++; return NULL; }
-    snprintf(va->path, sizeof(va->path), "%s", path); va->data = data; va->len = len;
-    vf->asset = va; vf->owned = 1;
-    g_whole_live += len; g_whole_n++; g_whole_kb += (unsigned)(len >> 10);
-    g_whole_us += (unsigned)(sceKernelGetProcessTimeWide() - t0);
-    return (FILE *)vf;
-}
-static void whole_release(VirtualAssetCache *va) {
-    if (!va) return;
-    g_whole_live -= va->len;
-    free(va->data); free(va);
-}
 /* background thread: the card read happens outside the lock, so the game thread never waits for it.
  * returns 1 loaded/already there, 0 no such small file, -1 no slot free for it */
 static int wav_prefetch_one(const char *path, unsigned older_than) {
@@ -1686,12 +1634,6 @@ static FILE *vita_fopen_impl(const char *path, const char *mode) {
         FILE *vf = wav_vfopen(rp);   /* v5.03; NULL for big/missing files -> normal fopen */
         if (vf) { track_file(vf, rp, mode); return vf; }
     }
-    if (ZW_WHOLE_FILE && g_main_loop_frame >= 60 && (!ZW_WHOLE_AB || ((g_main_loop_frame / 600) & 1)) &&
-        rp && fname && mode && is_asset_read_mode(mode) && !strchr(mode, '+') && !strchr(mode, 'w') &&
-        !strchr(mode, 'a') && !is_save_state_name(fname) && whole_ext_ok(fname)) {
-        FILE *vf = whole_vfopen(rp);   /* v5.17; NULL -> normal fopen */
-        if (vf) { track_file(vf, rp, mode); return vf; }
-    }
 
     FILE *f = fopen(rp, mode);
     if (f && fname && is_save_state_name(fname) && is_asset_read_mode(mode) &&
@@ -1988,8 +1930,7 @@ int vita_fclose(FILE *stream) {
                       vf->pos, vf->asset ? vf->asset->len : 0);
 #endif
         untrack_file(stream);
-        if (vf->owned) whole_release(vf->asset);   /* v5.17 */
-        else if (!vf->obb) wav_release(vf->asset);   /* v5.03 */
+        if (!vf->obb) wav_release(vf->asset);   /* v5.03 */
         vf_free(vf);
         return 0;
     }
@@ -3399,9 +3340,6 @@ static void (*g_ZombiesGame_Update_orig)(void *self) = NULL;
 static void (*g_CTutorialManager_Update_orig)(void *self, int dt) = NULL;
 static void (*g_CDownloadManager_Update_orig)(void *self) = NULL;
 static void (*g_GLOTManager_Update_orig)(void *self, int dt) = NULL;
-static void (*g_ZombiesGame_OnLoadMenuEnd)(void *self) = NULL;
-/* v4.38: real menu SWF loader (CMenu::Loading stage 1 calls it synchronously). */
-static void (*g_LoadSwfThread_Run)(void *self) = NULL;
 static uintptr_t g_zw_text_base = 0;
 /* v4.50: on-screen debug overlay inputs */
 static so_module *g_zw_mod = NULL;
@@ -3416,7 +3354,6 @@ static SceUInt64 g_t_step, g_t_render, g_t_swap, g_t_frame_max;
 static unsigned g_draws_step, g_draws_render;   /* v4.60 */
 static int g_zw_single_pass = 1;                /* v4.73: only nativeRender (appUpdate -> glf::AndroidUpdate) per frame */
 static SceUInt64 g_acc_step, g_acc_render, g_acc_swap, g_acc_wall_t0, g_acc_pre, g_acc_ovl;   /* v4.73: 60-frame timing log */
-#define ZW_FLASHMANAGER_SINGLETON_OFF 0xce723c /* static FlashManager* storage */
 static uintptr_t g_GSLoading_Update_sym = 0;
 /* g_main_loop_frame is defined above (v4.84) */
 
@@ -3585,11 +3522,6 @@ static int hook_CNotificationManager_AddLocalNotifications(void *self) {
     return 0;
 }
 
-static __attribute__((unused)) int hook_CIapManager_Init(void *self) {   /* v5.05: no longer installed */
-    LOGF("  CIapManager::Init suppressed self=%p\n", self);
-    return 0;
-}
-
 static void hook_ZombiesGame_GetCountryIpCode(void *self) {
     if (self && g_ZombiesGame_singleton_ptr && !*g_ZombiesGame_singleton_ptr) {
         *g_ZombiesGame_singleton_ptr = self;
@@ -3681,39 +3613,6 @@ static void hook_CPlayerManager_Update_noop(void *self, int dt) {
         LOGF("  CPlayerManager::Update suppressed self=%p dt=%d\n", self, dt);
     }
     count++;
-}
-
-#ifndef ZW_REAL_SAVE_LOAD
-#define ZW_REAL_SAVE_LOAD 1   /* v5.04: 1 = run the game's own save loaders */
-#endif
-#ifndef ZW_REAL_POSTINIT
-#define ZW_REAL_POSTINIT 1    /* v5.04: 1 = run CLevelManager::PostInit / PopulateActiveGoalList */
-#endif
-__attribute__((unused)) static int hook_CPlayerManager_Load_new_profile(void *self, int load_backup) {
-    LOGF("  CPlayerManager::Load suppressed self=%p load_backup=%d -> fresh profile ok\n",
-         self, load_backup);
-    return 1;
-}
-
-__attribute__((unused)) static int hook_CLevelManager_Load_new_profile(void *self, int load_backup) {
-    LOGF("  CLevelManager::Load suppressed self=%p load_backup=%d -> fresh level ok\n",
-         self, load_backup);
-    return 1;
-}
-
-__attribute__((unused)) static int hook_CSaveManager_Load_new_profile(void *self, int load_backup) {
-    LOGF("  CSaveManager::Load suppressed self=%p load_backup=%d -> fresh save sections ok\n",
-         self, load_backup);
-    return 1;
-}
-
-__attribute__((unused)) static int hook_CLevelManager_PostInit_probe(void *self) {
-    LOGF("  CLevelManager::PostInit probe self=%p -> suppressed\n", self);
-    return 0;
-}
-
-__attribute__((unused)) static void hook_CStatsManager_PopulateActiveGoalList_probe(void *self) {
-    LOGF("  CStatsManager::PopulateActiveGoalList probe self=%p -> suppressed\n", self);
 }
 
 static void hook_gameswf_initialize_probe(void *params) {
@@ -3875,10 +3774,8 @@ static void *maybe_unlock_gsloading_state(void *app) {
     /* v4.45: report the active state (as .so offsets) every 300 frames or on change. */
     {
         static void **last_vtable = NULL;
-        static int last_log_frame = -1000;
         if (vtable != last_vtable) {   /* v5.01: on change only (periodic copy cost 15 ms every 5 s) */
             last_vtable = vtable;
-            last_log_frame = g_main_loop_frame;
             LOGF("  v4.45 state frame=%d state=%p vtable=+0x%x update=+0x%x\n",
                  g_main_loop_frame, state,
                  (unsigned)((uintptr_t)vtable - g_zw_text_base),
@@ -4213,80 +4110,12 @@ static int hook_service_success_int(void) {
 static void hook_service_noop_void(void) {
 }
 
-/*
- * v4.39: hang locator. While g_swf_trace_on, a watchdog thread scans the
- * game thread's stack for return addresses into libZombieWood (.text
- * 0x354020..0xb0c078) that follow a Thumb BL/BLX, and logs them as ELF
- * offsets. Outer frames sit at the top of the stack; the innermost live
- * frames are the lowest addresses that stay stable between samples.
- */
-static volatile int g_swf_trace_on = 0;
-static volatile SceUID g_swf_trace_tid = -1;
 /* v5.04: the v4.41/v4.43 watchdogs wrote to address 0 to get a core dump when boot looked
  * stuck (no frame/log progress for 60 s). A slow card or a long level load must not crash
  * a release build, so this is off unless a hang is being debugged. */
 #ifndef ZW_FORCE_COREDUMP
 #define ZW_FORCE_COREDUMP 0
 #endif
-#define ZW_TEXT_LO 0x354020u
-#define ZW_TEXT_HI 0xb0c078u
-
-static int zw_is_thumb_retaddr(uintptr_t w) {
-    if (!g_zw_text_base || !(w & 1)) return 0;
-    uintptr_t off = (w & ~1u) - g_zw_text_base;
-    if (off < ZW_TEXT_LO + 4 || off >= ZW_TEXT_HI) return 0;
-    const uint16_t *p = (const uint16_t *)(w & ~1u);
-    uint16_t h1 = p[-2], h2 = p[-1];
-    if ((h1 & 0xf800) == 0xf000 && (h2 & 0xc000) == 0xc000) return 1; /* BL/BLX imm */
-    if ((h2 & 0xff87) == 0x4780) return 1;                             /* BLX reg */
-    return 0;
-}
-
-static int zw_swf_watchdog(SceSize args, void *argp) {
-    (void)args; (void)argp;
-    int sample = 0;
-    for (;;) {
-        sceKernelDelayThread(3 * 1000 * 1000);
-        if (!g_swf_trace_on || g_swf_trace_tid < 0) continue;
-        SceKernelThreadInfo info;
-        memset(&info, 0, sizeof(info));
-        info.size = sizeof(info);
-        if (sceKernelGetThreadInfo(g_swf_trace_tid, &info) < 0) {
-            LOG("  v4.39 watchdog: GetThreadInfo failed\n");
-            continue;
-        }
-        uintptr_t lo = (uintptr_t)info.stack;
-        uintptr_t hi = lo + info.stackSize;
-        LOGF("  v4.39 watchdog sample %d tid=0x%x stack=%08x..%08x frame=%d\n",
-             sample, (unsigned)g_swf_trace_tid, (unsigned)lo, (unsigned)hi,
-             g_main_loop_frame);
-        int hits = 0;
-        for (uintptr_t a = (hi - 4) & ~3u; a >= lo && hits < 96; a -= 4) {
-            uintptr_t w = *(volatile uint32_t *)a;
-            if (zw_is_thumb_retaddr(w)) {
-                LOGF("    [%02d] sp+%05x ret=0x%06x\n", hits,
-                     (unsigned)(hi - a), (unsigned)((w & ~1u) - g_zw_text_base));
-                hits++;
-            }
-        }
-        sample++;
-#ifndef VITA3K_BUILD
-        /*
-         * v4.41: on hardware, force a core dump while Run() is still hung.
-         * The .psp2dmp records every thread's registers, so the game thread
-         * (tid above) shows the exact looping PC. Fault from this thread only.
-         */
-        if (ZW_FORCE_COREDUMP && sample >= 7) {
-            LOGF("  v4.41 watchdog: Run still hung after ~%d s, forcing core dump (game tid=0x%x)\n",
-                 sample * 3, (unsigned)g_swf_trace_tid);
-            sceKernelDelayThread(500 * 1000); /* let the log line flush */
-            *(volatile uint32_t *)0x00000000 = 0x5357464Eu; /* "SWFN" */
-        }
-#endif
-    }
-    return 0;
-}
-
 /*
  * v4.42: keep the Vita awake. Nothing ticked the power timer, so auto-standby
  * and screen dimming could kick in during long loads/hangs (and drop Wi-Fi,
@@ -4298,8 +4127,7 @@ static int zw_power_tick_thread(SceSize args, void *argp) {
 #ifndef VITA3K_BUILD
     /*
      * v4.43: boot-time stall watchdog (hardware). If neither the log nor the
-     * main-loop frame counter moves for 60 s (outside the Run() watchdog
-     * window), force a core dump so the .psp2dmp shows where it stopped.
+     * main-loop frame counter moves for 60 s, force a core dump so the .psp2dmp shows where it stopped.
      */
     uint32_t last_bytes = g_log_bytes;
     int last_frame = g_main_loop_frame;
@@ -4313,7 +4141,7 @@ static int zw_power_tick_thread(SceSize args, void *argp) {
         zw_log_flush();   /* v5.04: the log is RAM-buffered; at most 5 s is lost on a crash */
         zw_obb_hdr_save_if_dirty();   /* v5.06 */
 #ifndef VITA3K_BUILD
-        if (g_swf_trace_on || g_log_bytes != last_bytes ||
+        if (g_log_bytes != last_bytes ||
             g_main_loop_frame != last_frame) {
             last_bytes = g_log_bytes;
             last_frame = g_main_loop_frame;
@@ -4337,79 +4165,6 @@ static void zw_start_power_tick(void) {
                                      0x10000100, 0x1000, 0, 0, NULL);
     if (t >= 0) sceKernelStartThread(t, 0, NULL);
     LOGF("  v4.42 power tick thread uid=0x%x\n", (unsigned)t);
-}
-
-static void zw_start_swf_watchdog(void) {
-    static int started = 0;
-    if (started) return;
-    started = 1;
-    SceUID t = sceKernelCreateThread("zw_swf_wd", zw_swf_watchdog, 0x10000100,
-                                     0x4000, 0, 0, NULL);
-    if (t >= 0) sceKernelStartThread(t, 0, NULL);
-    LOGF("  v4.39 watchdog thread uid=0x%x\n", (unsigned)t);
-}
-
-__attribute__((unused)) static int hook_CMenu_Loading_stage_emulator(void *self, int animate) {
-    static unsigned int calls = 0;
-    static int onload_end_called = 0;
-    calls++;
-    (void)animate;
-
-    /*
-     * v4.28: do not mutate CMenu+0x10 directly; that broke downstream menu
-     * assumptions. After a warmup, ask ZombiesGame to perform its normal
-     * load-menu completion callback, then let GSLoading see completion.
-     */
-    if (calls >= 120) {
-        int stage = self ? *(int *)((uintptr_t)self + 0x10) : -1;
-        /*
-         * v4.38: the real CMenu::Loading stage 1 does
-         *   t = new LoadSwfThread; t->done(+4)=0; t->animate(+5)=arg; t->vtbl[0]() == Run()
-         * synchronously, and Run() is the ONLY caller of FlashManager::SWFLoad
-         * ("/zombies.swf"), which creates FlashManager+0x24 (RenderFX*).
-         * Skipping it left RenderFX NULL -> crash in RenderFX::replaceTexture
-         * (this=NULL, fault @0x28) right after OnLoadMenuEnd in v4.37.
-         * Run it once here with tracing to see if it completes, hangs or crashes.
-         */
-        static int swf_run_called = 0;
-        if (!swf_run_called) {
-            swf_run_called = 1;
-            void **fm_slot = g_zw_text_base
-                ? (void **)(g_zw_text_base + ZW_FLASHMANAGER_SINGLETON_OFF) : NULL;
-            void *fm = fm_slot ? *fm_slot : NULL;
-            LOGF("  v4.38 LoadSwfThread::Run begin fn=%p fm=%p renderFX=%p frame=%d\n",
-                 (void *)g_LoadSwfThread_Run, fm,
-                 fm ? *(void **)((uintptr_t)fm + 0x24) : NULL, g_main_loop_frame);
-            if (g_LoadSwfThread_Run && fm) {
-                static uint32_t fake_thread[4] __attribute__((aligned(8)));
-                memset(fake_thread, 0, sizeof(fake_thread));
-                ((uint8_t *)fake_thread)[5] = (uint8_t)(animate != 0);
-                /* v4.40 MemoryMonitor bypass A/B removed: still hung, not the cause. */
-                g_swf_trace_tid = sceKernelGetThreadId();
-                zw_start_swf_watchdog();
-                g_swf_trace_on = 1;
-                g_LoadSwfThread_Run(fake_thread);
-                g_swf_trace_on = 0;
-                LOGF("  v4.38 LoadSwfThread::Run end done=%u renderFX=%p frame=%d\n",
-                     (unsigned)((uint8_t *)fake_thread)[4],
-                     *(void **)((uintptr_t)fm + 0x24), g_main_loop_frame);
-            }
-        }
-        if (!onload_end_called) {
-            void *zg = (g_ZombiesGame_singleton_ptr && *g_ZombiesGame_singleton_ptr)
-                       ? *g_ZombiesGame_singleton_ptr : NULL;
-            LOGF("  CMenu::Loading emu invoking OnLoadMenuEnd zg=%p fn=%p call=%u frame=%d\n",
-                 zg, (void *)g_ZombiesGame_OnLoadMenuEnd, calls, g_main_loop_frame);
-            if (zg && g_ZombiesGame_OnLoadMenuEnd) {
-                g_ZombiesGame_OnLoadMenuEnd(zg);
-            }
-            onload_end_called = 1;
-        }
-        LOGF("  CMenu::Loading emu complete call=%u frame=%d stage=%d\n",
-             calls, g_main_loop_frame, stage);
-        return 1;
-    }
-    return 0;
 }
 
 static int hook_language_index0(void) {
@@ -5053,7 +4808,7 @@ static void zw_options_frame(int frame) {
     if (!logged) { logged = 1; LOG("  v5.09 options: stick switch relabelled\n"); }
 }
 /* v5.15: split in two. zw_badges_frame runs on the game thread (it asks the game what is visible);
- * zw_badges_gl does the drawing and runs wherever GL runs (the GL thread when the queue is on). */
+ * zw_badges_gl does the drawing. */
 static int zw_badges_frame(int frame) {
     zw_options_frame(frame);
     if (!ZW_POWERUP_BADGES || !g_zw_so_base) return 0;
@@ -5268,19 +5023,8 @@ static void hook_application_loop_symbols(so_module *mod) {
         LOG("  ! ZombiesGame::FirstTimeInit symbol not found\n");
     }
 
-    g_ZombiesGame_OnLoadMenuEnd =
-        (void (*)(void *))so_symbol(mod, "_ZN11ZombiesGame13OnLoadMenuEndEv");
-    LOGF("  ZombiesGame::OnLoadMenuEnd target = %p\n",
-         (void *)g_ZombiesGame_OnLoadMenuEnd);
-
     g_zw_text_base = mod->text_base;
     g_zw_mod = mod;
-    g_LoadSwfThread_Run =
-        (void (*)(void *))so_symbol(mod, "_ZN13LoadSwfThread3RunEv");
-    LOGF("  v4.38 LoadSwfThread::Run target = %p FlashManager slot = 0x%08X\n",
-         (void *)g_LoadSwfThread_Run,
-         (unsigned)(mod->text_base + ZW_FLASHMANAGER_SINGLETON_OFF));
-
     g_GSLoading_Update_sym = so_symbol(mod, "_ZN9GSLoading6UpdateEP11Applicationj");
     LOGF("  GSLoading::Update target = 0x%08X\n",
          (unsigned)g_GSLoading_Update_sym);
@@ -5518,21 +5262,6 @@ static void hook_application_loop_symbols(so_module *mod) {
         { "_Z18AResLoader_GetDataPKc", (uintptr_t)hook_AResLoader_GetData },
         { "_ZN9SNManager6UpdateEi", (uintptr_t)hook_SNManager_Update_noop },
         { "_ZN18CGameConfigManager6UpdateEv", (uintptr_t)hook_CGameConfigManager_Update_noop },
-        /* v5.04: the three Load hooks below returned "fresh profile" without running the
-         * game's loader. They dated from when g_device was still NULL (each Load asserts
-         * and then dereferences g_device->fileSystem). With them in place no save was ever
-         * read, and none was written either: CPlayerManager::Save returns early unless
-         * the flag at +0x140 is set, which only the real Load path does. */
-#if !ZW_REAL_SAVE_LOAD
-        { "_ZN14CPlayerManager4LoadEb", (uintptr_t)hook_CPlayerManager_Load_new_profile },
-        { "_ZN13CLevelManager4LoadEb", (uintptr_t)hook_CLevelManager_Load_new_profile },
-        { "_ZN12CSaveManager4LoadEb", (uintptr_t)hook_CSaveManager_Load_new_profile },
-#endif
-#if !ZW_REAL_POSTINIT
-        /* PostInit probe hooks: suppress and log to find what hangs after save load */
-        { "_ZN13CLevelManager8PostInitEv", (uintptr_t)hook_CLevelManager_PostInit_probe },
-        { "_ZN13CStatsManager22PopulateActiveGoalListEv", (uintptr_t)hook_CStatsManager_PopulateActiveGoalList_probe },
-#endif
         /* v4.46: CMenu::Loading is no longer hooked. Its "block" (v4.28) was
          * the gameswf hash::add spin caused by the softfp/hardfp float ABI
          * mismatch (fixed in v4.44). The emulator only ran stage 1 (Run) and
@@ -6825,8 +6554,6 @@ static int game_main(int argc, char *argv[]) {
 #endif
     LOG("Starting initialization sequence\n");
     
-    /* Skip JNI logging - just let JNI_LOG macro check if g_jni_log_file is NULL */
-    
     /* ── 1b. Init fake JNI env table ── */
     jni_fake_env_init();
     log_jni_table_layout();
@@ -7037,7 +6764,6 @@ static int game_main(int argc, char *argv[]) {
 #if ZW_CALLPROF
         { extern void zw_prof_init(so_module *); zw_prof_init(&zombiewood_mod); }   /* measurement build only, after every other patch */
 #endif
-        { extern void zw_glq_install(so_module *); zw_glq_install(&zombiewood_mod); }   /* v5.15 */
     }
 
     /* ── 5c. Build the fake JavaVM and call JNI_OnLoad so the .so
@@ -7431,17 +7157,8 @@ static int game_main(int argc, char *argv[]) {
         }
 #endif
 #ifndef VITA3K_BUILD
-        {   /* v5.15: GL command queue (zw_glq.c). On from the menu onwards; boot stays direct. */
-            extern void zw_glq_set(int);
-#ifndef ZW_GLQ_AB
-#define ZW_GLQ_AB 0   /* 1 = measurement: queue off/on every 600 frames */
-#endif
-            if (ZW_GLQ_AB) { if (frame >= 60 && (frame % 600) == 0) zw_glq_set(((frame / 600) & 1) ? 0 : 1); }
-            else if (frame == 60) zw_glq_set(1);
-        }
-        extern int zw_glq_active(void); extern void zw_glq_callback(void (*)(uintptr_t), uintptr_t); extern void zw_glq_frame_submit(void);
         extern void zw_frame_clear_gl(uintptr_t); extern void zw_frame_swap_gl(uintptr_t);
-        int zw_pk = zw_glq_active() ? 0 : zw_ds_probe_kind(frame);
+        int zw_pk = zw_ds_probe_kind(frame);
         if (zw_pk == 1 || zw_pk == 2) {
             /* clear-only frame: no game rendering, read back what glClear wrote */
             float cd = zw_pk == 1 ? 1.0f : 0.25f;
@@ -7482,7 +7199,7 @@ static int game_main(int argc, char *argv[]) {
         /* v4.70: no loader glClearColor - the game blends its ground additively over the clear colour */
         if (frame == 0) LOG("  frame 0: before glClear\n");
         /* v4.60: clear depth+stencil ourselves every frame with full write masks */
-        zw_glq_callback(zw_frame_clear_gl, 0);
+        zw_frame_clear_gl(0);
         if (frame == 0) LOG("  frame 0: after glClear\n");
 #endif
         {   /* v4.50: one-frame GL call trace snapshots */
@@ -7515,10 +7232,10 @@ static int game_main(int argc, char *argv[]) {
         if (frame == 0) LOG("  frame 0: before GameRenderer_nativeRender\n");
         { unsigned _d = g_gl_draw_elements_count + g_gl_draw_arrays_count; SceUInt64 _t = sceKernelGetProcessTimeWide(); nativeRender(g_jni_env, NULL); g_t_render = sceKernelGetProcessTimeWide() - _t; g_draws_render = g_gl_draw_elements_count + g_gl_draw_arrays_count - _d; }
         if (zw_badges_frame(frame))   /* v5.09 */
-            zw_glq_callback(zw_badges_gl, (uintptr_t)((g_zw_badge_vis[0] ? 1 : 0) | (g_zw_badge_vis[1] ? 2 : 0) | (g_zw_badge_vis[2] ? 4 : 0)));
+            zw_badges_gl((uintptr_t)((g_zw_badge_vis[0] ? 1 : 0) | (g_zw_badge_vis[1] ? 2 : 0) | (g_zw_badge_vis[2] ? 4 : 0)));
         if (frame == 0) LOG("  frame 0: after GameRenderer_nativeRender\n");
         g_acc_pre += sceKernelGetProcessTimeWide() - zw_t_loop0 - g_t_step - g_t_render;   /* input + loader clear */
-        GLenum gl_err = zw_glq_active() ? GL_NO_ERROR : glGetError();
+        GLenum gl_err = glGetError();
         {
             extern volatile int g_zw_gl_trace;
             if (g_zw_gl_trace) LOGF("  v4.50 GL trace end frame %d\n", frame);
@@ -7535,15 +7252,13 @@ static int game_main(int argc, char *argv[]) {
                  g_gl_draw_arrays_count, g_gl_draw_elements_count);
         }
 #else
-        if (ZW_PERIODIC_LOG && (frame % 60) == 59) { extern void zw_glq_stats_log(int, unsigned); zw_glq_stats_log(frame, 60); }
         if ((ZW_PERIODIC_LOG && (frame % 60) == 0) || (gl_err != GL_NO_ERROR && frame < 600)) {
             LOGF("  frame %d: after frame glGetError=0x%04X draws=%u/%u\n",
                  frame, (unsigned)gl_err,
                  g_gl_draw_arrays_count, g_gl_draw_elements_count);
         }
         if (frame == 0) LOG("  frame 0: before vglSwapBuffers\n");
-        /* with the queue on, the swap is the last command of the frame and the time measured here is the wait for the GL thread */
-        { SceUInt64 _t = sceKernelGetProcessTimeWide(); zw_glq_callback(zw_frame_swap_gl, 0); zw_glq_frame_submit(); g_t_swap = sceKernelGetProcessTimeWide() - _t; SceUInt64 _f = g_t_step + g_t_render + g_t_swap; if (_f > g_t_frame_max) g_t_frame_max = _f; }
+        { SceUInt64 _t = sceKernelGetProcessTimeWide(); zw_frame_swap_gl(0); g_t_swap = sceKernelGetProcessTimeWide() - _t; SceUInt64 _f = g_t_step + g_t_render + g_t_swap; if (_f > g_t_frame_max) g_t_frame_max = _f; }
         if (frame == 0) LOG("  frame 0: after vglSwapBuffers\n");
         g_acc_step += g_t_step; g_acc_render += g_t_render; g_acc_swap += g_t_swap;
 #if ZW_CALLPROF
@@ -7581,9 +7296,6 @@ static int game_main(int argc, char *argv[]) {
                      frame, g_zw_texsub_n, g_zw_texsub_skip, g_zw_texsub_us / 1000, g_zw_texsub_max_us,
                      g_zw_texsub_last[0], g_zw_texsub_last[1], g_zw_texsub_last[2], g_zw_texsub_last[3], g_zw_texsub_last[4]);
                 g_zw_texsub_n = g_zw_texsub_skip = g_zw_texsub_us = g_zw_texsub_max_us = 0; }
-            LOGF("  v5.17 whole f%d: %u files, %u KB, %u ms reading, %u fell back, live %ld KB\n",
-                 frame, g_whole_n, g_whole_kb, g_whole_us / 1000, g_whole_skip, g_whole_live >> 10);
-            g_whole_n = g_whole_kb = g_whole_us = g_whole_skip = 0;
         }
         {   /* v5.01: slow-frame breakdown (only frames > 80 ms after boot, max 60 lines) */
             SceUInt64 ft = g_t_step + g_t_render + g_t_swap;
@@ -7669,7 +7381,7 @@ static int game_main(int argc, char *argv[]) {
     return 0;
 }
 
-/* v5.15: the loader's own per-frame GL work, as callbacks so it runs in order on the GL thread */
+/* the loader's own per-frame GL work */
 void zw_frame_clear_gl(uintptr_t unused) {
     (void)unused;
     /* v4.60: clear depth+stencil ourselves every frame with full write masks */
@@ -7679,7 +7391,8 @@ void zw_frame_clear_gl(uintptr_t unused) {
     { GLboolean dt = glIsEnabled(GL_DEPTH_TEST), st = glIsEnabled(GL_STENCIL_TEST);
       glEnable(GL_DEPTH_TEST); glEnable(GL_STENCIL_TEST);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-      if (!dt) glDisable(GL_DEPTH_TEST); if (!st) glDisable(GL_STENCIL_TEST); }
+      if (!dt) glDisable(GL_DEPTH_TEST);
+      if (!st) glDisable(GL_STENCIL_TEST); }
 }
 void zw_frame_swap_gl(uintptr_t unused) { (void)unused; vglSwapBuffers(GL_FALSE); }
 static void *game_thread_main(void *arg) {

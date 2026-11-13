@@ -48,7 +48,6 @@ void so_flush_caches(so_module *mod);
 int so_load(so_module *mod, const char *filename, uintptr_t load_addr);
 int so_relocate(so_module *mod);
 int so_resolve(so_module *mod, so_default_dynlib *default_dynlib, int size_default_dynlib, int default_dynlib_only);
-void so_initialize(so_module *mod);
 uintptr_t so_symbol(so_module *mod, const char *symbol);
 void fatal_error(const char *fmt, ...);
 

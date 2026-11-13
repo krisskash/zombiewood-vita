@@ -25,12 +25,10 @@ extern void zw_log(const char *fmt, ...);
 typedef uint32_t SLresult;
 typedef uint32_t SLuint32;
 typedef const void *SLInterfaceID;
-#define SL_RESULT_SUCCESS              0
 #define SL_RESULT_PARAMETER_INVALID    2
 #define SL_RESULT_FEATURE_UNSUPPORTED 12
 #define SL_OBJECT_STATE_REALIZED       2
 #define SL_PLAYSTATE_STOPPED 1
-#define SL_PLAYSTATE_PAUSED  2
 #define SL_PLAYSTATE_PLAYING 3
 
 /* Interface IDs: only their addresses matter. The game imports the *variables*
