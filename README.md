@@ -89,6 +89,10 @@ in the repository root to have them packed, otherwise the VPK gets the default b
 Open an issue with: your firmware and CFW, the APK version, what happened, and
 `ux0:data/zombiewood/debug_v2.log`.
 
+## AI disclosure
+This port was made with substantial help from an AI assistant (Claude), used for code, debugging
+and performance work. Every build was tested on real PS Vita hardware.
+
 ## Credits
 - [TheFloW](https://github.com/TheOfficialFloW) (Andy Nguyen): `so_util` from
   [gtasa_vita](https://github.com/TheOfficialFloW/gtasa_vita) (MIT, see `LICENSE.so_util`), whose
